@@ -106,7 +106,7 @@ VALIDATE
 ### 1. Clone and install Python deps
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/indian-trading-agent.git
+git clone https://github.com/Leo-Expose/indian-trading-agent.git
 cd indian-trading-agent
 
 python3 -m venv venv
