@@ -1,0 +1,96 @@
+# ====================================
+# SECRETS — NEVER COMMIT THESE
+# ====================================
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+credentials.json
+secrets.json
+
+# ====================================
+# Python
+# ====================================
+venv/
+env/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ====================================
+# Node / Next.js
+# ====================================
+node_modules/
+.next/
+out/
+frontend/.next/
+frontend/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ====================================
+# IDE / Editor
+# ====================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# ====================================
+# OS
+# ====================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+.AppleDouble
+.LSOverride
+
+# ====================================
+# Reference repo (cloned for reference, not part of our code)
+# ====================================
+reference-repo/
+
+# ====================================
+# Local data (user-specific)
+# ====================================
+*.db
+*.sqlite
+*.sqlite3
+.tradingagents/
+*.log
+
+# ====================================
+# Claude Code
+# ====================================
+.claude/
+
+# ====================================
+# Testing / Coverage
+# ====================================
+htmlcov/
+.coverage
+.coverage.*
+.cache
+coverage/
+
+# ====================================
+# Other
+# ====================================
+*.tmp
+*.bak
+*.backup

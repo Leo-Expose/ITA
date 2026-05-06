@@ -1,0 +1,34 @@
+Indian Market Trading Agent
+Copyright 2026 — contributors
+
+This product includes software originally developed by TauricResearch as part of the
+TradingAgents project (https://github.com/TauricResearch/TradingAgents),
+licensed under the Apache License, Version 2.0.
+
+The original TradingAgents framework is the foundation of the multi-agent LLM pipeline
+(LangGraph orchestration, agent prompts, memory/reflection system, data vendor routing).
+
+This project adapts and extends the original work for the Indian stock market (NSE/BSE)
+with additional features including:
+- Support/Resistance, Pivot Points, Cyclical Patterns analysis
+- Market Scanner (Gap / Volume / Breakout detection across NIFTY 50/100/BSE 250)
+- Unified Recommendation Engine combining multiple signals
+- FastAPI backend with WebSocket streaming
+- Next.js frontend (trading terminal UI)
+- Strategy Performance Tracker
+- Seasonal Backtest
+- Position Size Calculator
+- News aggregator (RSS + yfinance) with customizable sources
+- API key management via UI (no .env required)
+- Multi-provider LLM support with cost tracking
+
+The original TradingAgents project is cited as:
+
+  @misc{xiao2024tradingagents,
+    title={TradingAgents: Multi-Agents LLM Financial Trading Framework},
+    author={Yijia Xiao and Edward Sun and Di Luo and Wei Wang},
+    year={2024},
+    eprint={2412.20138},
+    archivePrefix={arXiv},
+    primaryClass={q-fin.TR}
+  }
