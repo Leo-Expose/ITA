@@ -37,9 +37,11 @@ function getDayContext() {
 }
 
 export default function DashboardPage() {
+  const [mounted, setMounted] = useState(false);
   const [health, setHealth] = useState<any>(null);
 
   useEffect(() => {
+    setMounted(true);
     getSystemHealth()
       .then(setHealth)
       .catch(() => setHealth({ status: "degraded", degraded_reasons: ["Backend health check unavailable"] }));
@@ -49,8 +51,8 @@ export default function DashboardPage() {
     <div className="p-6 space-y-5 max-w-7xl">
       {/* Greeting */}
       <div>
-        <h1 className="text-2xl font-bold">{getGreeting()}</h1>
-        <p className="text-sm text-muted-foreground mt-1">{getDayContext()}</p>
+        <h1 className="text-2xl font-bold">{mounted ? getGreeting() : "Welcome"}</h1>
+        <p className="text-sm text-muted-foreground mt-1">{mounted ? getDayContext() : ""}</p>
       </div>
 
       {/* Market Status Bar */}
