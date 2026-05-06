@@ -503,8 +503,8 @@ def get_user_selections():
     console.print(
         create_question_box(
             "Step 1: Ticker Symbol",
-            "Enter the exact ticker symbol to analyze, including exchange suffix when needed (examples: SPY, CNC.TO, 7203.T, 0700.HK)",
-            "SPY",
+            "Enter the exact ticker symbol to analyze, including exchange suffix when needed (examples: RELIANCE, TCS.NS, HDFCBANK.NS, ^NSEI)",
+            "RELIANCE",
         )
     )
     selected_ticker = get_ticker()
@@ -614,7 +614,7 @@ def get_user_selections():
 
 def get_ticker():
     """Get ticker symbol from user input."""
-    return typer.prompt("", default="SPY")
+    return typer.prompt("", default="RELIANCE")
 
 
 def get_analysis_date():

@@ -10,6 +10,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 
 export function TodayPicks({ universe = "nifty100" }: { universe?: string }) {
+  const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<any>(null);
   const [lastRun, setLastRun] = useState<Date | null>(null);
@@ -42,6 +43,7 @@ export function TodayPicks({ universe = "nifty100" }: { universe?: string }) {
   };
 
   useEffect(() => {
+    setMounted(true);
     load();
   }, [universe]);
 
@@ -81,7 +83,7 @@ export function TodayPicks({ universe = "nifty100" }: { universe?: string }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+            <Button variant="outline" size="sm" onClick={load} disabled={mounted ? loading : undefined}>
               {loading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RefreshCw className="h-3 w-3 mr-1" />}
               Refresh
             </Button>
@@ -138,6 +140,15 @@ export function TodayPicks({ universe = "nifty100" }: { universe?: string }) {
                     <p className="text-xs text-muted-foreground truncate">
                       {pick.bullish_signal_count} signals · RSI {pick.rsi || "—"}
                     </p>
+                    {pick.trade_overlay?.ok && (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        Size ₹<span className="font-medium text-foreground">{pick.trade_overlay.recommended_position_value_inr}</span>
+                        {" "}({pick.trade_overlay.recommended_shares} sh)
+                        {" "}· SL ₹<span className="font-medium text-foreground">{pick.trade_overlay.stop_loss}</span>
+                        {" "}· Target ₹<span className="font-medium text-foreground">{pick.trade_overlay.target_price}</span>
+                        {" "}· Risk ₹<span className="font-medium text-foreground">{pick.trade_overlay.estimated_risk_inr}</span>
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="flex gap-1">

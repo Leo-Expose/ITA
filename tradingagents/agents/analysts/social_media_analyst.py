@@ -1,4 +1,5 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import AIMessage
 from tradingagents.agents.utils.agent_utils import build_instrument_context, get_language_instruction, get_news
 from tradingagents.dataflows.config import get_config
 
@@ -41,17 +42,20 @@ def create_social_media_analyst(llm):
         prompt = prompt.partial(instrument_context=instrument_context)
 
         chain = prompt | llm.bind_tools(tools)
-
-        result = chain.invoke(state["messages"])
-
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
-
-        return {
-            "messages": [result],
-            "sentiment_report": report,
-        }
+        try:
+            result = chain.invoke(state["messages"])
+            report = (result.content or "").strip()
+            if not report:
+                report = "Sentiment analysis pending tool execution."
+            return {
+                "messages": [result],
+                "sentiment_report": report,
+            }
+        except Exception as e:
+            msg = f"Social analyst failed safely: {e}"
+            return {
+                "messages": [AIMessage(content=msg)],
+                "sentiment_report": msg,
+            }
 
     return social_media_analyst_node

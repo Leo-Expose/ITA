@@ -25,6 +25,7 @@ import math
 from typing import Optional
 
 from backend.db import get_db, get_setting, set_setting
+from tradingagents.dataflows.config import get_config
 
 
 # Maps the human-readable signal `type` field to the recommender's
@@ -59,6 +60,7 @@ TUNED_WEIGHTS_KEY = "recommender_tuned_weights"
 # Settings key for conditional per-regime overrides (Tier 4.1)
 # Shape: {"BULL": {"volume_bullish": 2.4, ...}, "BEAR": {...}, "SIDEWAYS": {...}, "HIGH_VOL": {...}}
 REGIME_WEIGHTS_KEY = "recommender_regime_weights"
+BANDIT_REGIME_WEIGHTS_KEY = "recommender_regime_bandit_weights"
 
 
 def _wilson_lower_bound(wins: int, n: int, z: float = 1.28) -> float:
@@ -583,6 +585,127 @@ def get_regime_weights() -> dict[str, dict[str, float]]:
     return {}
 
 
+def get_bandit_regime_weights() -> dict[str, dict[str, float]]:
+    """Load persisted contextual-bandit per-regime overrides from settings."""
+    raw = get_setting(BANDIT_REGIME_WEIGHTS_KEY)
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+        if isinstance(d, dict):
+            return {
+                regime: {k: float(v) for k, v in (overrides or {}).items()}
+                for regime, overrides in d.items()
+            }
+    except Exception:
+        pass
+    return {}
+
+
+def compute_contextual_bandit_updates(
+    window_days: int = 180,
+    min_samples: int = 8,
+    max_step: float = 0.20,
+) -> dict:
+    """Compute guarded regime-aware updates using a Beta-Binomial contextual bandit.
+
+    Uses posterior mean p=(wins+1)/(n+2), and scales magnitude conservatively.
+    """
+    suggestions = compute_signal_performance_by_regime(window_days=window_days)
+    base_tuned = get_tuned_weights()
+    by_regime: dict[str, dict] = {}
+
+    for signal in suggestions.get("by_signal", []):
+        key = signal["weight_key"]
+        base_weight = base_tuned.get(key, signal["current_weight"])
+        base_sign = 1 if base_weight >= 0 else -1
+        base_mag = abs(base_weight)
+        if base_mag == 0:
+            continue
+
+        for regime, stats in signal.get("by_regime", {}).items():
+            n = int(stats.get("n") or 0)
+            wins = int(stats.get("wins") or 0)
+            if n < min_samples:
+                continue
+
+            posterior_mean = (wins + 1) / (n + 2)  # Beta(1,1) prior
+            edge = posterior_mean - 0.5
+            scale = max(-max_step, min(max_step, edge * 1.5))
+            new_mag = max(0.0, min(3.5, base_mag * (1 + scale)))
+            suggested = round(base_sign * new_mag, 2)
+            delta = round(suggested - base_weight, 2)
+            if abs(delta) < 0.1:
+                continue
+
+            by_regime.setdefault(regime, {})[key] = {
+                "current": round(base_weight, 2),
+                "suggested": suggested,
+                "delta": delta,
+                "n": n,
+                "wins": wins,
+                "posterior_mean": round(posterior_mean, 3),
+                "win_rate": stats.get("win_rate"),
+            }
+
+    return {
+        "lookback_days": window_days,
+        "min_samples": min_samples,
+        "max_step": max_step,
+        "by_regime": by_regime,
+    }
+
+
+def apply_contextual_bandit_updates(
+    window_days: int = 180,
+    min_samples: int = 8,
+    max_step: float = 0.20,
+    only_regimes: Optional[list[str]] = None,
+) -> dict:
+    """Persist contextual-bandit overrides with guardrails."""
+    cfg = get_config()
+    if not bool(cfg.get("bandit_enabled", True)):
+        return {"applied": {}, "active_bandit_regime_weights": get_bandit_regime_weights(), "blocked": "bandit_disabled"}
+
+    cfg_min = int(cfg.get("bandit_min_samples", min_samples))
+    cfg_step = float(cfg.get("bandit_max_step", max_step))
+    min_samples = max(min_samples, cfg_min)
+    max_step = min(max_step, cfg_step)
+
+    updates = compute_contextual_bandit_updates(
+        window_days=window_days,
+        min_samples=min_samples,
+        max_step=max_step,
+    )
+    merged = get_bandit_regime_weights()
+    applied: dict[str, list] = {}
+
+    for regime, overrides in updates["by_regime"].items():
+        if only_regimes is not None and regime not in only_regimes:
+            continue
+        regime_store = merged.setdefault(regime, {})
+        applied[regime] = []
+        for key, info in overrides.items():
+            regime_store[key] = info["suggested"]
+            applied[regime].append(
+                {
+                    "key": key,
+                    "to": info["suggested"],
+                    "delta": info["delta"],
+                    "n": info["n"],
+                    "posterior_mean": info["posterior_mean"],
+                }
+            )
+
+    set_setting(BANDIT_REGIME_WEIGHTS_KEY, json.dumps(merged))
+    return {"applied": applied, "active_bandit_regime_weights": merged}
+
+
+def reset_contextual_bandit_updates() -> None:
+    """Clear contextual-bandit overrides."""
+    set_setting(BANDIT_REGIME_WEIGHTS_KEY, None)
+
+
 def apply_regime_weights(window_days: int = 180,
                           only_regimes: Optional[list[str]] = None) -> dict:
     """Compute conditional regime weights and persist them to settings."""
@@ -623,4 +746,86 @@ def get_active_weights_for_regime(regime: Optional[str]) -> dict[str, float]:
     if regime:
         regime_overrides = get_regime_weights().get(regime, {})
         merged.update(regime_overrides)
+        # Layer 4: contextual-bandit per-regime overrides
+        bandit_overrides = get_bandit_regime_weights().get(regime, {})
+        merged.update(bandit_overrides)
     return merged
+
+
+# --- Quality gates (guardrails for applying tuning) ---
+
+def compute_overall_trade_stats(window_days: int = 180, *, start_days_ago: int | None = None) -> dict:
+    """Compute simple net-of-cost stats over paper_trades pnl_5d_net_pct."""
+    from backend.db import _migrate_paper_trades_columns
+
+    _migrate_paper_trades_columns()
+    where_extra = ""
+    if start_days_ago is not None:
+        where_extra = f" AND entry_date >= date('now', '-{int(start_days_ago)} days')"
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT pnl_5d_net_pct, pnl_5d_pct
+            FROM paper_trades
+            WHERE pnl_5d_pct IS NOT NULL
+              AND entry_date >= date('now', '-{int(window_days)} days')
+              {where_extra}
+            """
+        ).fetchall()
+
+    pnls = []
+    for r in rows:
+        pnl = r["pnl_5d_net_pct"] if r["pnl_5d_net_pct"] is not None else r["pnl_5d_pct"]
+        if pnl is None:
+            continue
+        pnls.append(float(pnl))
+
+    n = len(pnls)
+    if n == 0:
+        return {"n": 0, "win_rate": None, "avg_return_5d_net_pct": None}
+    wins = sum(1 for x in pnls if x > 0)
+    return {
+        "n": n,
+        "win_rate": round(wins / n, 3),
+        "avg_return_5d_net_pct": round(sum(pnls) / n, 4),
+        "best_5d_net_pct": round(max(pnls), 4),
+        "worst_5d_net_pct": round(min(pnls), 4),
+    }
+
+
+def check_quality_gates(
+    *,
+    window_days: int = 180,
+    holdout_days: int = 30,
+    min_train_trades: int = 20,
+    min_holdout_trades: int = 10,
+    min_holdout_win_rate: float = 0.50,
+    min_holdout_avg_return_net_pct: float = 0.0,
+) -> dict:
+    """Return pass/fail + diagnostics for safe tuning application."""
+    train_days = max(1, int(window_days) - int(holdout_days))
+    train_stats = compute_overall_trade_stats(window_days=window_days, start_days_ago=window_days)
+    holdout_stats = compute_overall_trade_stats(window_days=holdout_days, start_days_ago=holdout_days)
+
+    reasons = []
+    if (train_stats.get("n") or 0) < min_train_trades:
+        reasons.append(f"Not enough training trades (need {min_train_trades}, have {train_stats.get('n', 0)})")
+    if (holdout_stats.get("n") or 0) < min_holdout_trades:
+        reasons.append(f"Not enough holdout trades (need {min_holdout_trades}, have {holdout_stats.get('n', 0)})")
+
+    wr = holdout_stats.get("win_rate")
+    avg = holdout_stats.get("avg_return_5d_net_pct")
+    if wr is not None and wr < min_holdout_win_rate:
+        reasons.append(f"Holdout win_rate {wr:.0%} < {min_holdout_win_rate:.0%}")
+    if avg is not None and avg < min_holdout_avg_return_net_pct:
+        reasons.append(f"Holdout avg_return {avg:.2f}% < {min_holdout_avg_return_net_pct:.2f}%")
+
+    return {
+        "ok": len(reasons) == 0,
+        "window_days": window_days,
+        "holdout_days": holdout_days,
+        "train_stats": train_stats,
+        "holdout_stats": holdout_stats,
+        "reasons": reasons,
+    }

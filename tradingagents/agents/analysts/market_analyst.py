@@ -1,18 +1,46 @@
+from datetime import datetime, timedelta
+
+import yfinance as yf
+from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_indicators,
     get_language_instruction,
     get_stock_data,
 )
-from tradingagents.dataflows.config import get_config
+from tradingagents.utils.rule_based_analysis import create_rule_based_report
 
 
 def create_market_analyst(llm):
+    def _load_recent_price_data(ticker: str, trade_date: str):
+        safe_ticker = ticker if "." in ticker else f"{ticker}.NS"
+        end_dt = datetime.strptime(trade_date, "%Y-%m-%d") + timedelta(days=1)
+        start_dt = end_dt - timedelta(days=90)
+        hist = yf.Ticker(safe_ticker).history(start=start_dt, end=end_dt)
+        if hist is None or hist.empty:
+            return None
+        return hist.reset_index()[["Open", "High", "Low", "Close", "Volume"]]
 
     def market_analyst_node(state):
         current_date = state["trade_date"]
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        ticker = state["company_of_interest"]
+
+        # Validate inputs
+        if not ticker or not current_date:
+            return {
+                "messages": [AIMessage(content="Error: Missing ticker or date for analysis")],
+                "market_report": "Analysis failed due to missing inputs"
+            }
+
+        # Build instrument context for LLM
+        instrument_context = f"""
+Instrument: {ticker}
+Analysis Date: {current_date}
+Market: Indian (NSE/BSE)
+Trading Session: 9:15 AM - 3:30 PM IST
+"""
 
         tools = [
             get_stock_data,
@@ -57,7 +85,9 @@ When making tool calls, use exact indicator names above. Call get_stock_data fir
 2. Key support and resistance levels
 3. Entry zones and stop-loss levels (using ATR)
 4. Short-term momentum signals
-5. Volume analysis"""
+5. Volume analysis
+        
+        IMPORTANT: Always validate tool call parameters and use proper JSON formatting"""
             + """ Append a Markdown table summarizing: Indicator | Value | Signal (Bullish/Bearish/Neutral) | Action Implication."""
             + get_language_instruction()
         )
@@ -86,16 +116,50 @@ When making tool calls, use exact indicator names above. Call get_stock_data fir
 
         chain = prompt | llm.bind_tools(tools)
 
-        result = chain.invoke(state["messages"])
+        try:
+            result = chain.invoke(state["messages"])
 
-        report = ""
+            # Validate result
+            if not result or not hasattr(result, "content"):
+                return {
+                    "messages": [AIMessage(content="Error: Invalid response from LLM")],
+                    "market_report": "Analysis failed due to LLM error",
+                }
 
-        if len(result.tool_calls) == 0:
-            report = result.content
+            report = (result.content or "").strip()
+            if not report:
+                report = "LLM response pending tool execution."
 
-        return {
-            "messages": [result],
-            "market_report": report,
-        }
+            # Deterministic fallback section to prevent empty/low-quality output.
+            try:
+                df = _load_recent_price_data(ticker, current_date)
+                if df is not None and not df.empty:
+                    rule_report = create_rule_based_report(ticker, df)
+                    report = f"{report}\n\n---\nRule-Based Cross-Check:\n{rule_report}"
+            except Exception:
+                pass
+
+            return {
+                "messages": [result],
+                "market_report": report,
+            }
+
+        except Exception as e:
+            # Handle chain invocation errors
+            error_msg = f"Technical analysis failed: {str(e)}"
+
+            # Try rule-based fallback
+            try:
+                df = _load_recent_price_data(ticker, current_date)
+                if df is not None and not df.empty:
+                    rule_report = create_rule_based_report(ticker, df)
+                    error_msg = f"{error_msg}\n\n---\nRule-Based Fallback:\n{rule_report}"
+            except Exception:
+                pass
+
+            return {
+                "messages": [AIMessage(content=error_msg)],
+                "market_report": error_msg,
+            }
 
     return market_analyst_node

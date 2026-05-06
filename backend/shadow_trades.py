@@ -120,11 +120,18 @@ def refresh_shadow_prices() -> dict:
     """Backfill 1/3/5/10-day prices + P&L for shadow trades."""
     from backend.simulation import _price_n_days_later
     from backend.utils.ticker import normalize_ticker
+    from backend.db import _migrate_shadow_trades_columns
+    from backend.cost_model import get_estimated_round_trip_cost_bps, cost_pct_from_bps, net_pnl_pct
+
+    # Ensure new net-of-cost columns exist for existing DBs.
+    _migrate_shadow_trades_columns()
+    cost_pct = cost_pct_from_bps(get_estimated_round_trip_cost_bps())
 
     with get_db() as conn:
         rows = conn.execute(
             """SELECT ticker, signal_date, entry_price,
-                      price_1d, price_3d, price_5d, price_10d
+                      price_1d, price_3d, price_5d, price_10d,
+                      pnl_1d_pct, pnl_3d_pct, pnl_5d_pct, pnl_10d_pct
                FROM shadow_trades
                ORDER BY signal_date DESC"""
         ).fetchall()
@@ -153,7 +160,18 @@ def refresh_shadow_prices() -> dict:
             entry_p = r["entry_price"]
             if entry_p:
                 pnl_pct = (price - entry_p) / entry_p * 100
-                updates[f"pnl_{horizon_label}_pct"] = round(pnl_pct, 3)
+                pnl_pct = round(pnl_pct, 3)
+                updates[f"pnl_{horizon_label}_pct"] = pnl_pct
+                updates["estimated_cost_pct"] = cost_pct
+                updates[f"pnl_{horizon_label}_net_pct"] = net_pnl_pct(pnl_pct)
+
+        # If gross pnl exists but net columns missing (older rows), backfill net.
+        for horizon_label in ("1d", "3d", "5d", "10d"):
+            gross = r.get(f"pnl_{horizon_label}_pct")
+            if gross is None:
+                continue
+            updates.setdefault("estimated_cost_pct", cost_pct)
+            updates.setdefault(f"pnl_{horizon_label}_net_pct", net_pnl_pct(gross))
 
         if updates:
             updates["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -202,9 +220,17 @@ def shadow_vs_user_comparison(window_days: int = 90) -> dict:
     Reveals false negatives: shadow win rate > user-tracked win rate means
     the user is systematically skipping winners.
     """
+    # Ensure net-of-cost columns exist for existing DBs.
+    try:
+        from backend.db import _migrate_shadow_trades_columns
+        _migrate_shadow_trades_columns()
+    except Exception:
+        pass
+
     with get_db() as conn:
         rows = conn.execute(
             f"""SELECT signal, confidence, user_tracked,
+                       pnl_1d_net_pct, pnl_3d_net_pct, pnl_5d_net_pct, pnl_10d_net_pct,
                        pnl_1d_pct, pnl_3d_pct, pnl_5d_pct, pnl_10d_pct
                 FROM shadow_trades
                 WHERE signal_date >= date('now', '-{int(window_days)} days')
@@ -216,8 +242,11 @@ def shadow_vs_user_comparison(window_days: int = 90) -> dict:
         if n == 0:
             return {"n": 0, "win_rate_5d": None, "avg_return_5d_pct": None,
                     "median_return_5d_pct": None}
-        returns = sorted([r["pnl_5d_pct"] for r in subset])
-        wins = sum(1 for r in subset if r["pnl_5d_pct"] > 0)
+        def r5(r):
+            return r["pnl_5d_net_pct"] if r.get("pnl_5d_net_pct") is not None else r["pnl_5d_pct"]
+
+        returns = sorted([r5(r) for r in subset])
+        wins = sum(1 for r in subset if r5(r) > 0)
         avg = sum(returns) / n
         med = returns[n // 2]
         return {

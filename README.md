@@ -113,7 +113,6 @@ python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 pip install -e .
-pip install fastapi uvicorn websockets aiosqlite numpy feedparser
 ```
 
 ### 2. Configure API key (pick ONE method)
@@ -138,15 +137,22 @@ cp .env.example .env
 ```
 
 This script:
-- Frees ports 8000 and 3000 if anything's already running
 - Starts the backend (uvicorn) on :8000
 - Starts the frontend (Next.js) on :3000
 - Waits for both to be healthy
 - Opens [http://localhost:3000](http://localhost:3000) in your browser
-- Tails both logs in one terminal (color-coded by service)
+- Tails both logs in one terminal
 - Cleans up both processes on `Ctrl+C`
 
-Override ports via env vars: `BACKEND_PORT=9000 FRONTEND_PORT=3001 ./start.sh`
+If ports are already busy, re-run with `KILL_PORTS=1` (safer opt-in than killing by default).
+
+Override ports via env vars:
+`BACKEND_PORT=9000 FRONTEND_PORT=3001 ./start.sh`
+
+Notes:
+- `./start.sh` sets `NEXT_PUBLIC_API_URL` automatically so the frontend points to your overridden backend port.
+- `curl` is required for health checks; `lsof` is only needed if you use `KILL_PORTS=1`.
+- Skip auto `npm install` with `SKIP_NPM_INSTALL=1`.
 
 <details>
 <summary>Or start them manually (two terminals)</summary>
@@ -156,13 +162,24 @@ Override ports via env vars: `BACKEND_PORT=9000 FRONTEND_PORT=3001 ./start.sh`
 uvicorn backend.app:app --reload --port 8000
 
 # Terminal 2 — frontend
-cd frontend && npm install && npm run dev
+cd frontend && npm install && NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
 
 # Then open http://localhost:3000
 ```
 </details>
 
 ---
+
+## Troubleshooting
+
+### FII/DII data unavailable
+
+The dashboard’s FII/DII widget calls `GET /api/fii-dii/today`. If live sources are blocked and you have **no local cache yet**, the endpoint returns `{"ok": false, "error_type": ...}` and the UI will show that message.
+
+Common fixes:
+- **Try again**: the upstream may be rate-limiting temporarily.
+- **Force refresh**: `GET /api/fii-dii/today?force_refresh=true`
+- **Manual seed (fallback)**: `POST /api/fii-dii/manual` with `{date, fii_net, dii_net, ...}` to seed your local cache (useful on first run if NSE is blocked).
 
 ## How It Works
 
@@ -227,6 +244,18 @@ Scans all stocks in NIFTY 100 and scores each one:
 Ratings: STRONG BUY (score ≥ +4), BUY (+2 to +4), SELL (-2 to -4), STRONG SELL (≤ -4).
 
 Success probability: 50% baseline + 4% per score point + 2% per aligned signal (capped at 85%).
+
+### Manual Execution Overlay (Size + SL/Target)
+
+Every recommendation now includes a deterministic `trade_overlay` field that turns the pick into an actionable manual plan:
+
+- Suggested **position size** (₹ and shares)
+- Suggested **stop-loss** (mechanical)
+- Suggested **target** (default ~2R)
+- Estimated **₹ risk** for the suggested size
+- Warnings if the budgets are too small or reward:risk is low
+
+This overlay is designed for **manual execution** (you still place orders yourself). It is bounded by the safety limits in `tradingagents/default_config.py` (`max_position_value`, `max_loss_per_trade`, etc.).
 
 ### Smart Filters Layered on Top (FREE)
 
@@ -326,6 +355,20 @@ Aggregated stats per signal:
 Suggestion formula preserves direction (a bullish signal stays bullish) and scales magnitude by `(wilson - 0.30) / 0.20`, capped at 2.5×. Minimum 10 trades per signal before any change is suggested — below that, data is too noisy.
 
 Click **Apply Suggested Weights** to persist overrides into the `settings` table. The recommender's `_refresh_active_weights()` reloads them at the start of every `recommend()` call. **The engine literally rewrites itself from your trade outcomes.**
+
+##### Quality-gated tuning (recommended)
+
+Tuning endpoints support an optional holdout guardrail so you don’t apply changes when recent outcomes are already negative:
+
+- `require_holdout_pass: true`
+- `holdout_days: 30` (or similar)
+
+Supported on:
+- `POST /api/signal-performance/apply`
+- `POST /api/signal-performance/regime-apply`
+- `POST /api/signal-performance/bandit-apply`
+
+If the gates fail, the apply call is blocked with `blocked: quality_gates_failed` and a diagnostic payload.
 
 #### 🎯 Verdict Calibration — grades the daily verdict
 
@@ -458,6 +501,8 @@ The page also exposes per-agent stats (active / decayed / stale / never_hit) and
 
 The recommender attaches a `success_probability` (e.g., 65%) to every pick. This page checks whether that number is *honest* — when it says 65%, do trades actually win 65% of the time?
 
+Calibration uses **net-of-cost** 5-day outcomes when available (`pnl_5d_net_pct`), falling back to gross (`pnl_5d_pct`) for older rows.
+
 **Brier score** is the single-number measure:
 
 ```
@@ -505,6 +550,15 @@ The page splits stats into 4 buckets:
 - **Filter HURTS** (skipped > tracked by 10%+): you're systematically skipping winners — trust the recommender more
 
 The trade table shows every shadow with its regime tag and per-horizon P&L. Rows where `user_tracked = ✗` and 5d P&L is large positive are the most painful — picks you skipped that turned into winners. Reviewing these reveals what your gut filter is missing.
+
+### Offline Evaluation (Walk-forward)
+
+To estimate how a simple “follow top-N picks daily” policy performs **net of costs**, use the walk-forward evaluator:
+
+- `POST /api/eval/walkforward`
+- `GET /api/eval/walkforward/{run_id}`
+
+It runs the historical recommender replay, selects top-N per day, subtracts the configured round-trip cost drag, and reports summary metrics like equity multiple and max drawdown proxy. Results are persisted locally in SQLite (`eval_runs`).
 
 ---
 

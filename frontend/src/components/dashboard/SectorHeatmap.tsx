@@ -27,6 +27,7 @@ function getSectorColor(returnPct: number): { bg: string; text: string; border: 
 }
 
 export function SectorHeatmap() {
+  const [mounted, setMounted] = useState(false);
   const [sectors, setSectors] = useState<Sector[]>([]);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState(3);
@@ -44,6 +45,7 @@ export function SectorHeatmap() {
   };
 
   useEffect(() => {
+    setMounted(true);
     load();
   }, []);
 
@@ -64,12 +66,12 @@ export function SectorHeatmap() {
                 variant={period === m ? "default" : "outline"}
                 className="h-6 px-2 text-xs"
                 onClick={() => { setPeriod(m); load(m); }}
-                disabled={loading}
+                disabled={mounted ? loading : undefined}
               >
                 {m}M
               </Button>
             ))}
-            <Button size="sm" variant="ghost" className="h-6 w-6 p-0" onClick={() => load()} disabled={loading}>
+            <Button size="sm" variant="ghost" className="h-6 w-6 p-0" onClick={() => load()} disabled={mounted ? loading : undefined}>
               {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
             </Button>
           </div>

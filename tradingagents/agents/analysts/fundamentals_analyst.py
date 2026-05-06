@@ -1,4 +1,5 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import AIMessage
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_balance_sheet,
@@ -53,17 +54,20 @@ def create_fundamentals_analyst(llm):
         prompt = prompt.partial(instrument_context=instrument_context)
 
         chain = prompt | llm.bind_tools(tools)
-
-        result = chain.invoke(state["messages"])
-
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
-
-        return {
-            "messages": [result],
-            "fundamentals_report": report,
-        }
+        try:
+            result = chain.invoke(state["messages"])
+            report = (result.content or "").strip()
+            if not report:
+                report = "Fundamentals analysis pending tool execution."
+            return {
+                "messages": [result],
+                "fundamentals_report": report,
+            }
+        except Exception as e:
+            msg = f"Fundamentals analyst failed safely: {e}"
+            return {
+                "messages": [AIMessage(content=msg)],
+                "fundamentals_report": msg,
+            }
 
     return fundamentals_analyst_node

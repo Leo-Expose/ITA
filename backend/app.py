@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from backend.db import ensure_db
-from backend.routers import market_data, analysis, watchlist, backtest, strategies, scanner, performance, recommender, settings as settings_router, news as news_router, simulation as simulation_router, insights as insights_router, fii_dii as fii_dii_router, calendar as calendar_router, concentration as concentration_router, daily_verdict as daily_verdict_router, signal_performance as signal_performance_router, verdict_calibration as verdict_calibration_router, regime as regime_router, confidence_calibration as confidence_calibration_router, shadow_trades as shadow_trades_router, memory as memory_router
+from backend.routers import market_data, analysis, watchlist, backtest, strategies, scanner, performance, recommender, settings as settings_router, news as news_router, simulation as simulation_router, insights as insights_router, fii_dii as fii_dii_router, calendar as calendar_router, concentration as concentration_router, daily_verdict as daily_verdict_router, signal_performance as signal_performance_router, verdict_calibration as verdict_calibration_router, regime as regime_router, confidence_calibration as confidence_calibration_router, shadow_trades as shadow_trades_router, memory as memory_router, eval as eval_router
 from backend.settings_manager import load_api_keys_into_env, apply_llm_config_to_default
 
 
@@ -64,11 +64,51 @@ app.include_router(regime_router.router)
 app.include_router(confidence_calibration_router.router)
 app.include_router(shadow_trades_router.router)
 app.include_router(memory_router.router)
+app.include_router(eval_router.router)
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "indian-trading-agent"}
+    from tradingagents.default_config import DEFAULT_CONFIG
+    from backend.fii_dii import get_recent_history
+    from backend.health_metrics import get_counters
+    from datetime import datetime
+
+    fii_dii_rows = 0
+    try:
+        fii_dii_rows = len(get_recent_history(days=1))
+    except Exception:
+        fii_dii_rows = 0
+
+    degraded_reasons = []
+    if not os.getenv("OPENAI_API_KEY") and not os.getenv("ANTHROPIC_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+        degraded_reasons.append("No major LLM API key detected in environment/settings")
+    if fii_dii_rows == 0:
+        degraded_reasons.append("Latest FII/DII cache missing")
+    stale_data = False
+    try:
+        recent = get_recent_history(days=1)
+        if recent:
+            fetched_at = recent[0].get("fetched_at")
+            if fetched_at:
+                age_sec = (datetime.now() - datetime.fromisoformat(fetched_at)).total_seconds()
+                stale_data = age_sec > 24 * 3600
+                if stale_data:
+                    degraded_reasons.append("FII/DII cache is stale (>24h)")
+    except Exception:
+        stale_data = True
+
+    return {
+        "status": "degraded" if degraded_reasons else "ok",
+        "service": "indian-trading-agent",
+        "free_tier_mode": bool(DEFAULT_CONFIG.get("free_tier_mode", False)),
+        "decision_source_default": "deterministic_rule_engine",
+        "degraded_reasons": degraded_reasons,
+        "stale_data_flags": {
+            "fii_dii_stale": stale_data,
+        },
+        "metrics": get_counters(),
+    }
 
 
 @app.get("/api/config")

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { MarketOverview } from "@/components/dashboard/MarketOverview";
 import { Watchlist } from "@/components/dashboard/Watchlist";
 import { RecentAnalyses } from "@/components/dashboard/RecentAnalyses";
@@ -12,6 +13,7 @@ import { CalendarBanner } from "@/components/dashboard/CalendarBanner";
 import { ConcentrationWidget } from "@/components/dashboard/ConcentrationWidget";
 import { DailyVerdict } from "@/components/dashboard/DailyVerdict";
 import { RegimeBadge } from "@/components/dashboard/RegimeBadge";
+import { getSystemHealth } from "@/lib/api";
 
 function getGreeting() {
   const hour = new Date().getHours();
@@ -35,6 +37,14 @@ function getDayContext() {
 }
 
 export default function DashboardPage() {
+  const [health, setHealth] = useState<any>(null);
+
+  useEffect(() => {
+    getSystemHealth()
+      .then(setHealth)
+      .catch(() => setHealth({ status: "degraded", degraded_reasons: ["Backend health check unavailable"] }));
+  }, []);
+
   return (
     <div className="p-6 space-y-5 max-w-7xl">
       {/* Greeting */}
@@ -45,6 +55,19 @@ export default function DashboardPage() {
 
       {/* Market Status Bar */}
       <MarketOverview />
+
+      {health && (
+        <div className={`rounded-lg border p-3 text-sm ${health.status === "ok" ? "border-green-500/40 bg-green-500/5" : "border-yellow-500/40 bg-yellow-500/5"}`}>
+          <div className="font-medium">
+            System Health: {health.status === "ok" ? "Healthy" : "Degraded"} {health.free_tier_mode ? "· Free-tier Mode On" : ""}
+          </div>
+          {health.degraded_reasons?.length > 0 && (
+            <div className="text-muted-foreground mt-1">
+              {health.degraded_reasons.join(" | ")}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Market Regime Badge — shows current regime (Bull/Bear/Sideways/High-Vol)
           so traders know which conditional signal weights to expect */}

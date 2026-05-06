@@ -29,10 +29,15 @@ from .nse_data import (
     get_fii_dii_activity,
     get_bulk_block_deals,
     get_delivery_percentage,
+    get_corporate_actions_summary,
+    get_bonus_shares_history,
+    get_stock_split_history,
+    get_dividend_history,
 )
 
 # Configuration and routing logic
 from .config import get_config
+from backend.health_metrics import incr
 
 # Tools organized by category
 TOOLS_CATEGORIES = {
@@ -66,11 +71,15 @@ TOOLS_CATEGORIES = {
         ]
     },
     "indian_market_data": {
-        "description": "NSE/BSE specific data (FII/DII, bulk deals, delivery %)",
+        "description": "NSE/BSE specific data (FII/DII, bulk deals, delivery %, corporate actions)",
         "tools": [
             "get_fii_dii_activity",
             "get_bulk_block_deals",
             "get_delivery_percentage",
+            "get_corporate_actions_summary",
+            "get_bonus_shares_history",
+            "get_stock_split_history",
+            "get_dividend_history",
         ]
     }
 }
@@ -133,6 +142,18 @@ VENDOR_METHODS = {
     "get_delivery_percentage": {
         "nse": get_delivery_percentage,
     },
+    "get_corporate_actions_summary": {
+        "nse": get_corporate_actions_summary,
+    },
+    "get_bonus_shares_history": {
+        "nse": get_bonus_shares_history,
+    },
+    "get_stock_split_history": {
+        "nse": get_stock_split_history,
+    },
+    "get_dividend_history": {
+        "nse": get_dividend_history,
+    },
 }
 
 def get_category_for_method(method: str) -> str:
@@ -183,6 +204,12 @@ def route_to_vendor(method: str, *args, **kwargs):
         try:
             return impl_func(*args, **kwargs)
         except AlphaVantageRateLimitError:
-            continue  # Only rate limits trigger fallback
+            incr("fallback_activations")
+            continue
+        except Exception:
+            # For resilient operation, fall through to next vendor when available.
+            incr("fallback_activations")
+            incr("upstream_failures")
+            continue
 
     raise RuntimeError(f"No available vendor for '{method}'")

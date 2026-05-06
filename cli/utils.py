@@ -8,7 +8,7 @@ from tradingagents.llm_clients.model_catalog import get_model_options
 
 console = Console()
 
-TICKER_INPUT_EXAMPLES = "Examples: SPY, CNC.TO, 7203.T, 0700.HK"
+TICKER_INPUT_EXAMPLES = "Examples: RELIANCE, TCS.NS, HDFCBANK.NS, ^NSEI"
 
 ANALYST_ORDER = [
     ("Market Analyst", AnalystType.MARKET),
@@ -150,8 +150,23 @@ def _fetch_openrouter_models() -> List[Tuple[str, str]]:
 def select_openrouter_model() -> str:
     """Select an OpenRouter model from the newest available, or enter a custom ID."""
     models = _fetch_openrouter_models()
-
-    choices = [questionary.Choice(name, value=mid) for name, mid in models[:5]]
+    
+    # Filter out coding-focused models and prioritize good chat models
+    preferred_models = []
+    coding_keywords = ['codellama', 'code', 'cobuddy', 'coder', 'deepseek-coder']
+    
+    for name, mid in models:
+        # Skip coding models
+        if any(keyword in name.lower() or keyword in mid.lower() for keyword in coding_keywords):
+            continue
+        # Prioritize good chat models for financial analysis
+        if any(keyword in name.lower() for keyword in ['llama', 'gpt', 'claude', 'gemini', 'mistral', 'mixtral']):
+            preferred_models.append((name, mid))
+    
+    # Use preferred models or fall back to first 5
+    models_to_show = preferred_models[:5] if preferred_models else models[:5]
+    
+    choices = [questionary.Choice(name, value=mid) for name, mid in models_to_show]
     choices.append(questionary.Choice("Custom model ID", value="custom"))
 
     choice = questionary.select(
@@ -174,6 +189,34 @@ def select_openrouter_model() -> str:
     return choice
 
 
+def select_groq_model() -> str:
+    """Select a Groq model or enter custom model ID."""
+    from tradingagents.llm_clients.model_catalog import get_model_options
+    
+    choices = [questionary.Choice(display, value=value) 
+               for display, value in get_model_options("groq", "quick")]
+    choices.append(questionary.Choice("Custom model ID", value="custom"))
+    
+    choice = questionary.select(
+        "Select Groq Model:",
+        choices=choices,
+        instruction="\n- Use arrow keys to navigate\n- Press Enter to select",
+        style=questionary.Style([
+            ("selected", "fg:blue noinherit"),
+            ("highlighted", "fg:blue noinherit"),
+            ("pointer", "fg:blue noinherit"),
+        ]),
+    ).ask()
+    
+    if choice is None or choice == "custom":
+        return questionary.text(
+            "Enter Groq model ID (e.g. llama-3.3-70b-versatile):",
+            validate=lambda x: len(x.strip()) > 0 or "Please enter a model ID.",
+        ).ask().strip()
+    
+    return choice
+
+
 def _prompt_custom_model_id() -> str:
     """Prompt user to type a custom model ID."""
     return questionary.text(
@@ -192,6 +235,9 @@ def _select_model(provider: str, mode: str) -> str:
             f"Enter Azure deployment name ({mode}-thinking):",
             validate=lambda x: len(x.strip()) > 0 or "Please enter a deployment name.",
         ).ask().strip()
+
+    if provider.lower() == "groq":
+        return select_groq_model()
 
     choice = questionary.select(
         f"Select Your [{mode.title()}-Thinking LLM Engine]:",

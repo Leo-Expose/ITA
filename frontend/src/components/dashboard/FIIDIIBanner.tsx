@@ -75,13 +75,21 @@ export function FIIDIIBanner() {
     );
   }
 
-  if (!bias || !bias.today_fii_net) {
+  const hasBiasNumbers = bias && bias.today_fii_net != null && bias.today_dii_net != null;
+  const cached = data?.ok ? data : (data?.ok === false ? null : data);
+  const cachedHasNumbers = cached && cached.fii_net != null && cached.dii_net != null;
+  const todayError =
+    data?.ok === false
+      ? (data?.error as string | undefined) || "FII/DII data unavailable."
+      : "FII/DII data unavailable.";
+
+  if (!hasBiasNumbers && !cachedHasNumbers) {
     return (
       <Card className="border-yellow-200 bg-yellow-50/30">
         <CardContent className="p-4 flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm">
             <AlertCircle className="h-4 w-4 text-yellow-700" />
-            <span className="text-yellow-800">FII/DII data unavailable. NSE may be blocking requests right now.</span>
+            <span className="text-yellow-800">{todayError}</span>
           </div>
           <Button size="sm" variant="outline" onClick={handleRefresh} disabled={refreshing}>
             {refreshing ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RefreshCw className="h-3 w-3 mr-1" />}
@@ -92,11 +100,13 @@ export function FIIDIIBanner() {
     );
   }
 
-  const style = biasColors[bias.bias] || biasColors.NEUTRAL;
+  const style = biasColors[bias?.bias || "NEUTRAL"] || biasColors.NEUTRAL;
   const Icon = style.icon;
 
-  const fiiToday = bias.today_fii_net;
-  const diiToday = bias.today_dii_net;
+  const fiiToday = hasBiasNumbers ? bias.today_fii_net : cached.fii_net;
+  const diiToday = hasBiasNumbers ? bias.today_dii_net : cached.dii_net;
+  const dataDate = hasBiasNumbers ? bias.data_date : cached.date;
+  const isStale = Boolean(cached?.stale) && !hasBiasNumbers;
 
   return (
     <Card className={`${style.border} ${style.bg}`}>
@@ -107,14 +117,23 @@ export function FIIDIIBanner() {
               <Building2 className={`h-5 w-5 ${style.text}`} />
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Institutional Flow ({bias.data_date})</p>
+              <p className="text-xs text-muted-foreground">
+                Institutional Flow ({dataDate})
+                {isStale && (
+                  <span className="ml-2 text-[11px] text-yellow-700 bg-yellow-50 border border-yellow-200 rounded px-1.5 py-0.5">
+                    stale (cached)
+                  </span>
+                )}
+              </p>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold text-sm">FII: <span className={fiiToday >= 0 ? "text-green-700" : "text-red-700"}>{formatCr(fiiToday)}</span></span>
                 <span className="font-semibold text-sm">DII: <span className={diiToday >= 0 ? "text-green-700" : "text-red-700"}>{formatCr(diiToday)}</span></span>
-                <Badge variant="outline" className={`${style.text} border-current`}>
-                  <Icon className="h-3 w-3 mr-1" />
-                  {bias.bias} ({bias.confidence})
-                </Badge>
+                {bias && (
+                  <Badge variant="outline" className={`${style.text} border-current`}>
+                    <Icon className="h-3 w-3 mr-1" />
+                    {bias.bias} ({bias.confidence})
+                  </Badge>
+                )}
               </div>
             </div>
           </div>

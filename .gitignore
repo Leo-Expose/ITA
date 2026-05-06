@@ -73,6 +73,9 @@ reference-repo/
 *.sqlite3
 .tradingagents/
 *.log
+reports/
+*.prof
+logs/
 
 # ====================================
 # Claude Code

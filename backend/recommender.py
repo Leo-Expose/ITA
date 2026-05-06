@@ -12,6 +12,8 @@ import numpy as np
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from backend.scanner import NIFTY_50, NIFTY_100, BSE_250, UNIVERSES
+from tradingagents.dataflows.config import get_config
+from backend.health_metrics import incr
 
 
 # Historical win rates (baseline — will be overridden by live performance data if available)
@@ -268,6 +270,7 @@ def _analyze_stock(ticker: str) -> dict | None:
             "bearish_signal_count": len(bearish_signals),
             "near_support": round(recent_low, 2),
             "near_resistance": round(recent_high, 2),
+            "decision_source": "deterministic_rule_engine",
         }
     except Exception as e:
         return None
@@ -445,9 +448,14 @@ def recommend(
         total_capital: portfolio capital for concentration % calculation
     """
     # Refresh learned weight overrides from settings before scoring any stock
+    incr("recommender_runs")
     _refresh_active_weights()
 
+    config = get_config()
+    free_tier_mode = bool(config.get("free_tier_mode", False))
     stocks = UNIVERSES.get(universe, NIFTY_100)
+    if free_tier_mode and len(stocks) > 60:
+        stocks = stocks[:60]
     all_results = []
 
     # Fetch FII/DII market bias once (used for all stocks)
@@ -479,7 +487,8 @@ def recommend(
         except Exception as e:
             print(f"[Recommender] Concentration check failed: {e}", flush=True)
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    max_workers = 6 if free_tier_mode else 10
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_analyze_stock, ticker): ticker for ticker in stocks}
         for f in as_completed(futures):
             result = f.result()
@@ -508,6 +517,17 @@ def recommend(
                         result = _apply_concentration_filter(result, conc_check)
                     except Exception:
                         pass
+
+                # Portfolio overlay: deterministic manual-execution plan (size/SL/target).
+                # Best-effort; never blocks recommendations.
+                try:
+                    from backend.portfolio_overlay import suggest_trade_overlay
+                    result["trade_overlay"] = suggest_trade_overlay(
+                        result,
+                        total_capital_inr=float(total_capital),
+                    )
+                except Exception:
+                    result["trade_overlay"] = {"ok": False, "warnings": ["Overlay unavailable"]}
                 all_results.append(result)
 
     # Separate by direction and sort
@@ -534,6 +554,8 @@ def recommend(
         "concentration_summary": concentration_summary,
         "active_regime": _ACTIVE_REGIME,
         "regime_weight_overrides_active": regime_weight_count,
+        "decision_source": "deterministic_rule_engine",
+        "free_tier_mode": free_tier_mode,
         "strong_buys": strong_buys[:20],
         "buys": buys[:20],
         "sells": sells[:20],

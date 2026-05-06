@@ -75,10 +75,17 @@ def compute_calibration(window_days: int = 180) -> dict:
             ],
         }
     """
+    # Ensure net-of-cost columns exist for existing DBs.
+    try:
+        from backend.db import _migrate_paper_trades_columns
+        _migrate_paper_trades_columns()
+    except Exception:
+        pass
+
     with get_db() as conn:
         rows = conn.execute(
             f"""
-            SELECT success_probability, pnl_5d_pct, direction
+            SELECT success_probability, pnl_5d_net_pct, pnl_5d_pct, direction
             FROM paper_trades
             WHERE pnl_5d_pct IS NOT NULL
               AND success_probability IS NOT NULL
@@ -117,7 +124,10 @@ def compute_calibration(window_days: int = 180) -> dict:
         # Win = trade made money. paper_trades.pnl_5d_pct is signed P&L for the
         # position direction (LONG: positive when price up, SHORT: positive when
         # price down). So pnl > 0 always means "trade was correct".
-        outcome = 1 if r["pnl_5d_pct"] > 0 else 0
+        pnl_net = r["pnl_5d_net_pct"]
+        pnl_gross = r["pnl_5d_pct"]
+        pnl_used = pnl_net if pnl_net is not None else pnl_gross
+        outcome = 1 if pnl_used > 0 else 0
         observations.append((pred, outcome))
 
     n = len(observations)

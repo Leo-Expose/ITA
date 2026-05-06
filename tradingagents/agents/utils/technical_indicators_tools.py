@@ -1,6 +1,7 @@
 from langchain_core.tools import tool
 from typing import Annotated
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.utils.tool_validation import safe_tool_call
 
 @tool
 def get_indicators(
@@ -20,6 +21,23 @@ def get_indicators(
     Returns:
         str: A formatted dataframe containing the technical indicators for the specified ticker symbol and indicator.
     """
+    safe_result = safe_tool_call(
+        lambda **params: params,
+        "get_indicators",
+        symbol=symbol,
+        indicator=indicator,
+        curr_date=curr_date,
+        look_back_days=look_back_days,
+    )
+    if not safe_result["success"]:
+        return f"Error: {safe_result['error']}"
+
+    params = safe_result["result"]
+    symbol = params["symbol"]
+    curr_date = params["curr_date"]
+    look_back_days = int(params.get("look_back_days", 30))
+    indicator = params["indicator"]
+
     # LLMs sometimes pass multiple indicators as a comma-separated string;
     # split and process each individually.
     indicators = [i.strip().lower() for i in indicator.split(",") if i.strip()]

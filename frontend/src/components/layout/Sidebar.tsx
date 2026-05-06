@@ -129,8 +129,8 @@ export function Sidebar() {
 
       <div className="p-4 border-t border-border">
         <div className="text-[10px] text-muted-foreground">
-          <p>Powered by Claude + LangGraph</p>
-          <p className="mt-0.5">Data: yfinance (NSE)</p>
+          <p>Hybrid Engine: Deterministic + AI</p>
+          <p className="mt-0.5">Data: NSE + yfinance fallback</p>
         </div>
       </div>
     </aside>

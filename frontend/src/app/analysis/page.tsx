@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAnalysisStore } from "@/lib/store";
 import { DecisionCard } from "@/components/analysis/DecisionCard";
@@ -29,16 +29,15 @@ export default function AnalysisPage() {
 
 function AnalysisPageInner() {
   const searchParams = useSearchParams();
-  const defaultTicker = searchParams.get("ticker") || "";
+  const [mounted, setMounted] = useState(false);
+  const [secondsAgo, setSecondsAgo] = useState<number | null>(null);
 
   // Global store — survives page navigation
   const analysis = useAnalysisStore();
 
   // Local input state (pre-filled from URL or last analysis ticker)
-  const [tickerInput, setTickerInput] = useState(defaultTicker || analysis.ticker || "");
-  const [tradeDateInput, setTradeDateInput] = useState(
-    analysis.tradeDate || new Date().toISOString().split("T")[0]
-  );
+  const [tickerInput, setTickerInput] = useState("");
+  const [tradeDateInput, setTradeDateInput] = useState("");
 
   // Analysis options
   const [selectedAnalysts, setSelectedAnalysts] = useState<string[]>([
@@ -47,6 +46,33 @@ function AnalysisPageInner() {
   const [depth, setDepth] = useState(1);
   const [language, setLanguage] = useState("English");
   const [calcOpen, setCalcOpen] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Initialize inputs on the client to avoid SSR hydration mismatches
+  useEffect(() => {
+    if (!mounted) return;
+    const urlTicker = searchParams.get("ticker") || "";
+    const nextTicker = (urlTicker || analysis.ticker || "").toUpperCase();
+    if (!tickerInput) setTickerInput(nextTicker);
+    if (!tradeDateInput) setTradeDateInput(analysis.tradeDate || new Date().toISOString().split("T")[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, searchParams]);
+
+  // Live “seconds ago” counter (client-only)
+  useEffect(() => {
+    if (!mounted) return;
+    if (!(analysis.status === "running" && analysis.lastUpdateAt > 0)) {
+      setSecondsAgo(null);
+      return;
+    }
+    const tick = () => setSecondsAgo(Math.floor((Date.now() - analysis.lastUpdateAt) / 1000));
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [mounted, analysis.status, analysis.lastUpdateAt]);
 
   const handleRun = () => {
     if (!tickerInput.trim()) return;
@@ -59,6 +85,14 @@ function AnalysisPageInner() {
   };
 
   const displayTicker = analysis.ticker || tickerInput;
+
+  if (!mounted) {
+    return (
+      <div className="p-6">
+        <p className="text-muted-foreground">Loading...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 space-y-6">
@@ -105,7 +139,7 @@ function AnalysisPageInner() {
             </div>
             <Button
               onClick={handleRun}
-              disabled={analysis.status === "running" || !tickerInput.trim()}
+              disabled={Boolean(analysis.status === "running" || !tickerInput.trim())}
               className="h-10"
             >
               {analysis.status === "running" ? (
@@ -152,7 +186,7 @@ function AnalysisPageInner() {
               <span className="text-blue-700 font-mono text-xs truncate flex-1">{analysis.heartbeat}</span>
               {analysis.lastUpdateAt > 0 && (
                 <span className="text-xs text-muted-foreground">
-                  {Math.floor((Date.now() - analysis.lastUpdateAt) / 1000)}s ago
+                  {secondsAgo ?? 0}s ago
                 </span>
               )}
             </div>

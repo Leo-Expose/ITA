@@ -21,4 +21,9 @@ def analyze_single_stock(ticker: str):
     result = _analyze_stock(ticker)
     if not result:
         return {"error": f"Could not analyze {ticker}"}
+    try:
+        from backend.portfolio_overlay import suggest_trade_overlay
+        result["trade_overlay"] = suggest_trade_overlay(result)
+    except Exception:
+        result["trade_overlay"] = {"ok": False, "warnings": ["Overlay unavailable"]}
     return result

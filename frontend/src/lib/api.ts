@@ -48,6 +48,7 @@ export const removeFromWatchlist = (ticker: string) =>
 
 // Config
 export const getConfig = () => fetchAPI(`/api/config`);
+export const getSystemHealth = () => fetchAPI(`/api/health`);
 
 // Settings — API Keys & LLM Config
 export const getApiKeys = () => fetchAPI(`/api/settings/api-keys`);
@@ -204,6 +205,31 @@ export const applyRegimeWeights = (windowDays = 180, onlyRegimes?: string[]) =>
   });
 export const resetRegimeWeights = () =>
   fetchAPI(`/api/signal-performance/regime-reset`, { method: "POST" });
+
+// Tier 4.3: contextual-bandit regime updates
+export const getBanditSuggestions = (windowDays = 180, minSamples = 8, maxStep = 0.2) =>
+  fetchAPI(`/api/signal-performance/bandit-suggestions?window_days=${windowDays}&min_samples=${minSamples}&max_step=${maxStep}`);
+export const getBanditActive = () =>
+  fetchAPI(`/api/signal-performance/bandit-active`);
+export const applyBanditWeights = (
+  windowDays = 180,
+  minSamples = 8,
+  maxStep = 0.2,
+  onlyRegimes?: string[],
+) =>
+  fetchAPI(`/api/signal-performance/bandit-apply`, {
+    method: "POST",
+    body: JSON.stringify({
+      window_days: windowDays,
+      min_samples: minSamples,
+      max_step: maxStep,
+      only_regimes: onlyRegimes ?? null,
+    }),
+  });
+export const resetBanditWeights = () =>
+  fetchAPI(`/api/signal-performance/bandit-reset`, { method: "POST" });
+export const rollbackBanditWeights = () =>
+  fetchAPI(`/api/signal-performance/bandit-rollback`, { method: "POST" });
 
 // Market Regime (Bull/Bear/Sideways/High-Vol classifier)
 export const getCurrentRegime = () => fetchAPI(`/api/regime/current`);

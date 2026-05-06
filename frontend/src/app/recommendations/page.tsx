@@ -61,6 +61,7 @@ function RecommendationCard({ rec }: { rec: any }) {
   const [expanded, setExpanded] = useState(false);
   const style = ratingStyles[rec.direction] || ratingStyles.BUY;
   const Icon = style.icon;
+  const overlay = rec.trade_overlay;
 
   return (
     <Card className={`${style.border}`}>
@@ -95,6 +96,36 @@ function RecommendationCard({ rec }: { rec: any }) {
                 {rec.bearish_signal_count > 0 && <span className="text-red-600">{rec.bearish_signal_count} bearish signals</span>}
                 {rec.rsi !== null && <span> / RSI: {rec.rsi}</span>}
               </p>
+
+              {overlay?.ok && (
+                <div className="mt-2 text-xs">
+                  <div className="flex flex-wrap gap-2 text-muted-foreground">
+                    <span>
+                      Size: <span className="font-medium text-foreground">₹{overlay.recommended_position_value_inr}</span>
+                      {" "}({overlay.recommended_shares} sh)
+                    </span>
+                    <span>
+                      SL: <span className="font-medium text-foreground">₹{overlay.stop_loss}</span>
+                    </span>
+                    <span>
+                      Target: <span className="font-medium text-foreground">₹{overlay.target_price}</span>
+                    </span>
+                    {overlay.reward_risk && (
+                      <span>
+                        R:R <span className="font-medium text-foreground">{overlay.reward_risk}</span>
+                      </span>
+                    )}
+                    <span>
+                      Risk: <span className="font-medium text-foreground">₹{overlay.estimated_risk_inr}</span>
+                    </span>
+                  </div>
+                  {overlay.warnings?.length > 0 && (
+                    <div className="mt-1 text-[11px] text-yellow-700 bg-yellow-50 border border-yellow-200 rounded px-2 py-1">
+                      {overlay.warnings.join(" | ")}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
           <div className="flex gap-2">
@@ -264,38 +295,44 @@ export default function RecommendationsPage() {
 
       {/* Summary */}
       {data && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <Card className="border-green-300">
+        <div className="space-y-3">
+          <div className="text-xs text-muted-foreground">
+            Decision source: <span className="font-medium">{data.decision_source || "deterministic_rule_engine"}</span>
+            {data.free_tier_mode ? " · Free-tier mode active" : ""}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <Card className="border-green-300">
             <CardContent className="p-3 text-center">
               <p className="text-xs text-muted-foreground">Strong Buy</p>
               <p className="text-2xl font-bold text-green-700">{data.strong_buys.length}</p>
             </CardContent>
-          </Card>
-          <Card className="border-green-200">
+            </Card>
+            <Card className="border-green-200">
             <CardContent className="p-3 text-center">
               <p className="text-xs text-muted-foreground">Buy</p>
               <p className="text-2xl font-bold text-green-600">{data.buys.length}</p>
             </CardContent>
-          </Card>
-          <Card className="border-red-200">
+            </Card>
+            <Card className="border-red-200">
             <CardContent className="p-3 text-center">
               <p className="text-xs text-muted-foreground">Sell</p>
               <p className="text-2xl font-bold text-red-600">{data.sells.length}</p>
             </CardContent>
-          </Card>
-          <Card className="border-red-300">
+            </Card>
+            <Card className="border-red-300">
             <CardContent className="p-3 text-center">
               <p className="text-xs text-muted-foreground">Strong Sell</p>
               <p className="text-2xl font-bold text-red-700">{data.strong_sells.length}</p>
             </CardContent>
-          </Card>
-          <Card>
+            </Card>
+            <Card>
             <CardContent className="p-3 text-center">
               <p className="text-xs text-muted-foreground">Analyzed</p>
               <p className="text-2xl font-bold">{data.total_analyzed}</p>
               <p className="text-xs text-muted-foreground">{data.total_with_signals} with signals</p>
             </CardContent>
-          </Card>
+            </Card>
+          </div>
         </div>
       )}
 

@@ -104,11 +104,13 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Llama 3.3 70B", "llama-3.3-70b-versatile"),
             ("Llama 3.1 70B", "llama-3.1-70b-versatile"),
             ("Mixtral 8x7B", "mixtral-8x7b-32768"),
+            ("Gemma2 9B", "gemma2-9b-it"),
         ],
         "deep": [
             ("Llama 3.3 70B", "llama-3.3-70b-versatile"),
             ("Llama 3.1 70B", "llama-3.1-70b-versatile"),
             ("Mixtral 8x7B", "mixtral-8x7b-32768"),
+            ("Gemma2 9B", "gemma2-9b-it"),
         ],
     },
     # OpenRouter: fetched dynamically. Azure: any deployed model name.
@@ -143,4 +145,14 @@ def get_known_models() -> Dict[str, List[str]]:
             }
         )
         for provider, mode_options in MODEL_OPTIONS.items()
+    }
+
+
+def get_free_tier_recommendations() -> Dict[str, str]:
+    """Lightweight defaults optimized for low-cost/free-tier operation."""
+    return {
+        "openrouter_quick": "meta-llama/llama-3.1-8b-instruct",
+        "openrouter_deep": "meta-llama/llama-3.3-70b-instruct",
+        "groq_quick": "llama-3.1-70b-versatile",
+        "google_quick": "gemini-2.5-flash-lite",
     }

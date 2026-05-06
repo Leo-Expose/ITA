@@ -219,18 +219,40 @@ def paper_trading_stats() -> dict:
     trades = list_paper_trades()
 
     def compute_stats(horizon: str):
-        key = f"pnl_{horizon}_pct"
-        valid = [t for t in trades if t.get(key) is not None]
+        gross_key = f"pnl_{horizon}_pct"
+        net_key = f"pnl_{horizon}_net_pct"
+        valid = [t for t in trades if t.get(gross_key) is not None]
         if not valid:
-            return {"count": 0, "win_rate": 0, "avg_return": 0, "best": 0, "worst": 0}
-        wins = sum(1 for t in valid if t[key] > 0)
-        total_return = sum(t[key] for t in valid)
+            return {
+                "count": 0,
+                "win_rate_gross": 0,
+                "avg_return_gross": 0,
+                "best_gross": 0,
+                "worst_gross": 0,
+                "win_rate_net": 0,
+                "avg_return_net": 0,
+                "best_net": 0,
+                "worst_net": 0,
+            }
+
+        def get_net(t: dict) -> float:
+            return t.get(net_key) if t.get(net_key) is not None else t.get(gross_key)
+
+        wins_gross = sum(1 for t in valid if t[gross_key] > 0)
+        total_gross = sum(t[gross_key] for t in valid)
+        net_vals = [get_net(t) for t in valid]
+        wins_net = sum(1 for x in net_vals if x > 0)
+        total_net = sum(net_vals)
         return {
             "count": len(valid),
-            "win_rate": round(wins / len(valid) * 100, 1),
-            "avg_return": round(total_return / len(valid), 2),
-            "best": round(max(t[key] for t in valid), 2),
-            "worst": round(min(t[key] for t in valid), 2),
+            "win_rate_gross": round(wins_gross / len(valid) * 100, 1),
+            "avg_return_gross": round(total_gross / len(valid), 2),
+            "best_gross": round(max(t[gross_key] for t in valid), 2),
+            "worst_gross": round(min(t[gross_key] for t in valid), 2),
+            "win_rate_net": round(wins_net / len(valid) * 100, 1),
+            "avg_return_net": round(total_net / len(valid), 2),
+            "best_net": round(max(net_vals), 2),
+            "worst_net": round(min(net_vals), 2),
         }
 
     return {

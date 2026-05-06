@@ -1,4 +1,5 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import AIMessage
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_global_news,
@@ -47,16 +48,20 @@ def create_news_analyst(llm):
         prompt = prompt.partial(instrument_context=instrument_context)
 
         chain = prompt | llm.bind_tools(tools)
-        result = chain.invoke(state["messages"])
-
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
-
-        return {
-            "messages": [result],
-            "news_report": report,
-        }
+        try:
+            result = chain.invoke(state["messages"])
+            report = (result.content or "").strip()
+            if not report:
+                report = "News analysis pending tool execution."
+            return {
+                "messages": [result],
+                "news_report": report,
+            }
+        except Exception as e:
+            msg = f"News analyst failed safely: {e}"
+            return {
+                "messages": [AIMessage(content=msg)],
+                "news_report": msg,
+            }
 
     return news_analyst_node

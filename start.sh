@@ -15,6 +15,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+KILL_PORTS="${KILL_PORTS:-0}"               # set to 1 to kill processes on ports
+SKIP_NPM_INSTALL="${SKIP_NPM_INSTALL:-0}"   # set to 1 to skip auto npm install
 BACKEND_LOG="/tmp/trading-agent-backend.log"
 FRONTEND_LOG="/tmp/trading-agent-frontend.log"
 BACKEND_HEALTH_URL="http://localhost:${BACKEND_PORT}/api/health"
@@ -38,6 +40,16 @@ ok()     { echo "${C_GREEN}[ok]${C_RESET}    $*"; }
 warn()   { echo "${C_YELLOW}[warn]${C_RESET}  $*"; }
 err()    { echo "${C_RED}[err]${C_RESET}   $*" 1>&2; }
 
+require_cmd() {
+  local cmd="$1"
+  local hint="${2:-}"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    err "Missing required command: ${cmd}"
+    [[ -n "$hint" ]] && err "$hint"
+    exit 1
+  fi
+}
+
 # --- Pre-flight checks ---
 cd "$ROOT_DIR"
 
@@ -47,15 +59,21 @@ if [[ ! -d "venv" ]]; then
   exit 1
 fi
 
-if [[ ! -d "frontend/node_modules" ]]; then
+if [[ "$SKIP_NPM_INSTALL" != "1" && ! -d "frontend/node_modules" ]]; then
   warn "frontend/node_modules missing. Running 'npm install' (one-time setup)..."
   (cd frontend && npm install)
 fi
+
+require_cmd curl "Install curl (e.g. apt/pacman) and re-run."
 
 # --- Free ports if something's already running ---
 free_port() {
   local port="$1"
   local pids
+  if ! command -v lsof >/dev/null 2>&1; then
+    warn "lsof not found; cannot check/kill port ${port}. Install lsof or set KILL_PORTS=0."
+    return 0
+  fi
   pids="$(lsof -ti ":${port}" 2>/dev/null || true)"
   if [[ -n "$pids" ]]; then
     warn "Port ${port} is in use. Killing existing process(es): ${pids}"
@@ -72,8 +90,12 @@ free_port() {
   fi
 }
 
-free_port "$BACKEND_PORT"
-free_port "$FRONTEND_PORT"
+if [[ "$KILL_PORTS" == "1" ]]; then
+  free_port "$BACKEND_PORT"
+  free_port "$FRONTEND_PORT"
+else
+  warn "Not killing ports by default. If ports are busy, re-run with KILL_PORTS=1."
+fi
 
 # --- Cleanup on exit (Ctrl+C, normal exit, or error) ---
 BACKEND_PID=""
@@ -96,6 +118,21 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# --- Check Python runtime deps are installed ---
+log "Checking Python dependencies in venv..."
+(
+  cd "$ROOT_DIR"
+  # shellcheck disable=SC1091
+  source venv/bin/activate
+  python -c "import fastapi, uvicorn, aiosqlite, websockets, numpy, feedparser, requests, yfinance, bs4, nsepython" >/dev/null 2>&1 || {
+    err "Python deps missing in ./venv."
+    err "Run:"
+    err "  source venv/bin/activate && pip install -e ."
+    exit 1
+  }
+)
+ok "Python deps look good."
+
 # --- Start backend ---
 log "Starting backend on :${BACKEND_PORT}..."
 : > "$BACKEND_LOG"
@@ -112,7 +149,7 @@ log "Starting frontend on :${FRONTEND_PORT}..."
 : > "$FRONTEND_LOG"
 (
   cd "$ROOT_DIR/frontend"
-  exec npm run dev -- --port "$FRONTEND_PORT"
+  NEXT_PUBLIC_API_URL="http://localhost:${BACKEND_PORT}" exec npm run dev -- --port "$FRONTEND_PORT"
 ) >>"$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!
 

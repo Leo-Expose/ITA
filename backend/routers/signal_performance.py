@@ -14,6 +14,10 @@ from backend.signal_performance import (
     apply_regime_weights,
     reset_regime_weights,
     get_regime_weights,
+    compute_contextual_bandit_updates,
+    apply_contextual_bandit_updates,
+    reset_contextual_bandit_updates,
+    get_bandit_regime_weights,
 )
 
 router = APIRouter(prefix="/api/signal-performance", tags=["signal-performance"])
@@ -38,11 +42,18 @@ def get_active():
 class ApplyRequest(BaseModel):
     window_days: int = 90
     only_keys: Optional[list[str]] = None  # if None, apply all suggested changes
+    require_holdout_pass: bool = False
+    holdout_days: int = 30
 
 
 @router.post("/apply")
 def apply(req: ApplyRequest):
     """Persist suggested weight changes. Recommender will use these on the next run."""
+    if req.require_holdout_pass:
+        from backend.signal_performance import check_quality_gates
+        gate = check_quality_gates(window_days=req.window_days, holdout_days=req.holdout_days)
+        if not gate["ok"]:
+            return {"ok": False, "blocked": "quality_gates_failed", "gate": gate}
     return apply_tuned_weights(window_days=req.window_days, only_keys=req.only_keys)
 
 
@@ -71,11 +82,18 @@ def regime_active():
 class ApplyRegimeRequest(BaseModel):
     window_days: int = 180
     only_regimes: Optional[list[str]] = None  # e.g., ["HIGH_VOL"] to apply only that one
+    require_holdout_pass: bool = False
+    holdout_days: int = 30
 
 
 @router.post("/regime-apply")
 def regime_apply(req: ApplyRegimeRequest):
     """Persist per-regime suggestions. Recommender uses them on the next run."""
+    if req.require_holdout_pass:
+        from backend.signal_performance import check_quality_gates
+        gate = check_quality_gates(window_days=req.window_days, holdout_days=req.holdout_days)
+        if not gate["ok"]:
+            return {"ok": False, "blocked": "quality_gates_failed", "gate": gate}
     return apply_regime_weights(window_days=req.window_days, only_regimes=req.only_regimes)
 
 
@@ -84,3 +102,60 @@ def regime_reset():
     """Clear per-regime overrides — recommender falls back to base tuned weights."""
     reset_regime_weights()
     return {"status": "ok", "message": "Regime weights cleared"}
+
+
+class ApplyBanditRequest(BaseModel):
+    window_days: int = 180
+    min_samples: int = 8
+    max_step: float = 0.20
+    only_regimes: Optional[list[str]] = None
+    require_holdout_pass: bool = False
+    holdout_days: int = 30
+
+
+@router.get("/bandit-suggestions")
+def bandit_suggestions(window_days: int = 180, min_samples: int = 8, max_step: float = 0.20):
+    """Compute contextual-bandit regime updates (does NOT persist)."""
+    return compute_contextual_bandit_updates(
+        window_days=window_days,
+        min_samples=min_samples,
+        max_step=max_step,
+    )
+
+
+@router.get("/bandit-active")
+def bandit_active():
+    """Return currently active contextual-bandit regime overrides."""
+    return {"by_regime": get_bandit_regime_weights()}
+
+
+@router.post("/bandit-apply")
+def bandit_apply(req: ApplyBanditRequest):
+    """Persist contextual-bandit regime updates."""
+    min_samples = max(5, min(200, req.min_samples))
+    max_step = max(0.05, min(0.5, req.max_step))
+    if req.require_holdout_pass:
+        from backend.signal_performance import check_quality_gates
+        gate = check_quality_gates(window_days=req.window_days, holdout_days=req.holdout_days)
+        if not gate["ok"]:
+            return {"ok": False, "blocked": "quality_gates_failed", "gate": gate}
+    return apply_contextual_bandit_updates(
+        window_days=req.window_days,
+        min_samples=min_samples,
+        max_step=max_step,
+        only_regimes=req.only_regimes,
+    )
+
+
+@router.post("/bandit-reset")
+def bandit_reset():
+    """Clear contextual-bandit overrides."""
+    reset_contextual_bandit_updates()
+    return {"status": "ok", "message": "Contextual bandit weights cleared"}
+
+
+@router.post("/bandit-rollback")
+def bandit_rollback():
+    """Immediate rollback switch for contextual-bandit overrides."""
+    reset_contextual_bandit_updates()
+    return {"status": "ok", "message": "Contextual bandit rollback applied"}

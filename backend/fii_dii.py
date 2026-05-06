@@ -11,10 +11,12 @@ Data sources (with fallback chain):
 Caches results in DB to avoid hammering external sources.
 """
 
+import re
 import requests
 import time
+from dataclasses import dataclass
 from datetime import datetime, date, timedelta
-from typing import Optional
+from typing import Optional, Literal, TypedDict
 from backend.db import get_db
 
 
@@ -60,111 +62,286 @@ def _get_nse_session() -> requests.Session:
     return session
 
 
-def fetch_from_nse() -> Optional[dict]:
+FiiDiiErrorType = Literal["missing_dependency", "blocked", "parse_error", "upstream_error", "no_cache"]
+
+
+class FiiDiiFetchError(TypedDict, total=False):
+    error_type: FiiDiiErrorType
+    error: str
+    details: str
+    source: str
+
+
+def _classify_exception(err: Exception) -> FiiDiiFetchError:
+    msg = str(err) or err.__class__.__name__
+    lowered = msg.lower()
+    if isinstance(err, ImportError):
+        return {"error_type": "missing_dependency", "error": "Python dependency missing", "details": msg}
+    if "403" in lowered or "429" in lowered or "forbidden" in lowered or "too many requests" in lowered:
+        return {"error_type": "blocked", "error": "Upstream blocked the request (rate-limit / forbidden)", "details": msg}
+    if "json" in lowered and ("decode" in lowered or "parse" in lowered):
+        return {"error_type": "parse_error", "error": "Upstream response changed (parse error)", "details": msg}
+    return {"error_type": "upstream_error", "error": "Upstream request failed", "details": msg}
+
+
+def _parse_nse_fiidii_raw(raw) -> list[dict]:
+    # nse_fiidii has returned (across versions): a string table, a DataFrame-like, or list[dict]
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if hasattr(raw, "to_dict"):
+        try:
+            return raw.to_dict("records")
+        except Exception:
+            return []
+    if isinstance(raw, str):
+        lines = [l for l in raw.strip().split("\n") if l.strip()]
+        if len(lines) < 2:
+            return []
+        out: list[dict] = []
+        for line in lines[1:]:
+            parts = line.split()
+            if parts and parts[0].isdigit():
+                parts = parts[1:]
+            if len(parts) < 5:
+                continue
+            try:
+                out.append(
+                    {
+                        "category": parts[0],
+                        "date": parts[1],
+                        "buyValue": float(parts[2].replace(",", "")),
+                        "sellValue": float(parts[3].replace(",", "")),
+                        "netValue": float(parts[4].replace(",", "")),
+                    }
+                )
+            except Exception:
+                continue
+        return out
+    return []
+
+
+def _entries_to_fiidii(entries: list[dict], source: str) -> Optional[dict]:
+    if not entries:
+        return None
+    result = {"fii_buy": 0, "fii_sell": 0, "fii_net": 0, "dii_buy": 0, "dii_sell": 0, "dii_net": 0}
+    date_str = None
+    for entry in entries:
+        cat = (entry.get("category") or entry.get("clientType") or entry.get("type") or "").upper()
+        buy = float(entry.get("buyValue", entry.get("buy", 0)) or 0)
+        sell = float(entry.get("sellValue", entry.get("sell", 0)) or 0)
+        net = float(entry.get("netValue", entry.get("net", 0)) or 0)
+        d = entry.get("date") or entry.get("tradedDate") or entry.get("tradeDate")
+        if d and not date_str:
+            date_str = str(d)
+
+        if "FII" in cat or "FPI" in cat or "FPI/FII" in cat:
+            result["fii_buy"] = buy
+            result["fii_sell"] = sell
+            result["fii_net"] = net
+        elif "DII" in cat:
+            result["dii_buy"] = buy
+            result["dii_sell"] = sell
+            result["dii_net"] = net
+
+    if date_str:
+        for fmt in ("%d-%b-%Y", "%d-%b-%y", "%d/%m/%Y"):
+            try:
+                parsed = datetime.strptime(date_str, fmt)
+                result["date"] = parsed.strftime("%Y-%m-%d")
+                break
+            except Exception:
+                pass
+        result.setdefault("date", date.today().strftime("%Y-%m-%d"))
+    else:
+        result["date"] = date.today().strftime("%Y-%m-%d")
+
+    result["source"] = source
+    if result["fii_buy"] == 0 and result["fii_sell"] == 0 and result["dii_buy"] == 0 and result["dii_sell"] == 0:
+        # Some upstreams include only one side; still accept if nets exist, but reject fully empty rows.
+        if result["fii_net"] == 0 and result["dii_net"] == 0:
+            return None
+    return result
+
+
+def fetch_from_nse_api_with_error() -> tuple[Optional[dict], Optional[FiiDiiFetchError]]:
+    """Fetch FII/DII data from NSE's JSON endpoint (cookie-primed session)."""
+    url_candidates = [
+        # Widely used endpoint (may change; keep a short list for resilience).
+        "https://www.nseindia.com/api/fiidiiTradeReact?type=equities",
+        "https://www.nseindia.com/api/fiidiiTradeReact",
+    ]
+    session = _get_nse_session()
+    last_err: Optional[FiiDiiFetchError] = None
+    for url in url_candidates:
+        try:
+            resp = session.get(url, timeout=10)
+            if resp.status_code in (401, 403, 429):
+                return None, {
+                    "error_type": "blocked",
+                    "error": "NSE blocked the request (cookie / bot protection / rate-limit)",
+                    "details": f"HTTP {resp.status_code} from {url}",
+                    "source": "nse_api",
+                }
+            if resp.status_code != 200:
+                last_err = {
+                    "error_type": "upstream_error",
+                    "error": "NSE endpoint returned non-200",
+                    "details": f"HTTP {resp.status_code} from {url}",
+                    "source": "nse_api",
+                }
+                continue
+            try:
+                raw = resp.json()
+            except Exception as e:
+                last_err = {**_classify_exception(e), "source": "nse_api"}
+                continue
+
+            entries: list[dict] = []
+            if isinstance(raw, list):
+                entries = raw
+            elif isinstance(raw, dict):
+                if isinstance(raw.get("data"), list):
+                    entries = raw["data"]
+                elif isinstance(raw.get("data"), dict) and isinstance(raw["data"].get("data"), list):
+                    entries = raw["data"]["data"]
+            data = _entries_to_fiidii(entries, source="nse_api")
+            if data:
+                return data, None
+            last_err = {
+                "error_type": "parse_error",
+                "error": "NSE JSON response could not be parsed",
+                "details": f"No usable rows from {url}",
+                "source": "nse_api",
+            }
+        except Exception as e:
+            last_err = {**_classify_exception(e), "source": "nse_api"}
+    return None, last_err or {"error_type": "upstream_error", "error": "NSE endpoint unavailable", "source": "nse_api"}
+
+
+def fetch_from_nse_with_error() -> tuple[Optional[dict], Optional[FiiDiiFetchError]]:
     """Fetch latest FII/DII data from NSE via nsepython library.
 
     Returns:
-        Dict with date, fii_buy/sell/net, dii_buy/sell/net — or None if failed.
+        (data, error) where data is dict with date, fii_buy/sell/net, dii_buy/sell/net.
     """
     try:
-        from nsepython import nse_fiidii
+        try:
+            from nsepython import nse_fiidii
+        except ImportError as e:
+            return None, {**_classify_exception(e), "source": "nse"}
 
-        raw = nse_fiidii()
+        try:
+            raw = nse_fiidii()
+        except Exception as e:
+            return None, {**_classify_exception(e), "source": "nse"}
 
-        # nse_fiidii returns a stringified table — parse it
-        entries = []
-        if isinstance(raw, str):
-            lines = [l for l in raw.strip().split("\n") if l.strip()]
-            if len(lines) < 2:
-                return None
-
-            # Skip header line, parse data rows like:
-            # "0      DII  30-Apr-2026  18252.89  14765.79    3487.1"
-            for line in lines[1:]:
-                parts = line.split()
-                # Drop leading index if it's a digit
-                if parts and parts[0].isdigit():
-                    parts = parts[1:]
-                if len(parts) < 5:
-                    continue
-                try:
-                    cat = parts[0]
-                    date_str = parts[1]
-                    buy_val = float(parts[2])
-                    sell_val = float(parts[3])
-                    net_val = float(parts[4])
-                    entries.append({
-                        "category": cat,
-                        "date": date_str,
-                        "buyValue": buy_val,
-                        "sellValue": sell_val,
-                        "netValue": net_val,
-                    })
-                except (ValueError, IndexError):
-                    continue
-        elif hasattr(raw, "to_dict"):
-            entries = raw.to_dict("records")
-        elif isinstance(raw, list):
-            entries = raw
-        else:
-            return None
-
+        entries = _parse_nse_fiidii_raw(raw)
         if not entries:
-            return None
+            return None, {"error_type": "parse_error", "error": "NSE response could not be parsed", "details": "No rows parsed from nsepython output", "source": "nse"}
 
-        result = {"fii_buy": 0, "fii_sell": 0, "fii_net": 0, "dii_buy": 0, "dii_sell": 0, "dii_net": 0}
-        date_str = None
-
-        for entry in entries:
-            cat = (entry.get("category") or "").upper()
-            buy = float(entry.get("buyValue", 0) or 0)
-            sell = float(entry.get("sellValue", 0) or 0)
-            net = float(entry.get("netValue", 0) or 0)
-            d = entry.get("date")
-            if d and not date_str:
-                date_str = d
-
-            if "FII" in cat or "FPI" in cat:
-                result["fii_buy"] = buy
-                result["fii_sell"] = sell
-                result["fii_net"] = net
-            elif "DII" in cat:
-                result["dii_buy"] = buy
-                result["dii_sell"] = sell
-                result["dii_net"] = net
-
-        if date_str:
-            try:
-                parsed = datetime.strptime(date_str, "%d-%b-%Y")
-                result["date"] = parsed.strftime("%Y-%m-%d")
-            except Exception:
-                result["date"] = date.today().strftime("%Y-%m-%d")
-        else:
-            result["date"] = date.today().strftime("%Y-%m-%d")
-
-        result["source"] = "nse"
-        return result
+        data = _entries_to_fiidii(entries, source="nsepython")
+        if not data:
+            return None, {"error_type": "parse_error", "error": "NSE response could not be parsed", "details": "Parsed rows did not contain FII/DII values", "source": "nsepython"}
+        return data, None
     except Exception as e:
         print(f"[FII/DII] NSE fetch failed: {e}", flush=True)
-        return None
+        return None, {**_classify_exception(e), "source": "nsepython"}
+
+
+def fetch_from_nse() -> Optional[dict]:
+    data, _err = fetch_from_nse_with_error()
+    return data
 
 
 def fetch_from_moneycontrol() -> Optional[dict]:
     """Fallback: scrape moneycontrol's FII/DII data."""
     try:
-        url = "https://www.moneycontrol.com/stocks/marketstats/fii_dii_activity/index.php"
-        resp = requests.get(url, headers={"User-Agent": NSE_HEADERS["User-Agent"]}, timeout=15)
+        from bs4 import BeautifulSoup
+
+        url = "https://www.moneycontrol.com/stocks/marketstats/fii_dii_activity/"
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": NSE_HEADERS["User-Agent"],
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=15,
+        )
         if resp.status_code != 200:
             return None
 
-        # Simple pattern match for the values (this is fragile but works as fallback)
-        # Production version would use BeautifulSoup
-        text = resp.text
-        # Look for patterns like "FII"..."Net"..."-2,453.45" etc.
-        # For now, return None and let manual entry handle it
-        return None
+        html = resp.text or ""
+        if "Login Consent" in html or "consent" in html.lower() and "moneycontrol" in html.lower():
+            return None
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Find any table rows that look like: Date | FII Gross Purchase | FII Gross Sales | FII Net | DII Gross Purchase | DII Gross Sales | DII Net
+        # We scan row-by-row and extract 7 cells with numeric values in expected positions.
+        def to_float(s: str) -> Optional[float]:
+            s = (s or "").strip()
+            if not s:
+                return None
+            s = s.replace(",", "")
+            # Sometimes net values include parentheses or non-breaking spaces
+            s = s.replace("(", "-").replace(")", "")
+            m = re.search(r"-?\d+(?:\.\d+)?", s)
+            return float(m.group(0)) if m else None
+
+        best_row = None
+        for tr in soup.find_all("tr"):
+            tds = tr.find_all(["td", "th"])
+            if len(tds) < 7:
+                continue
+            cells = [td.get_text(" ", strip=True) for td in tds]
+            # Date is usually first cell like 30-Apr-2026
+            if not re.search(r"\b\d{1,2}-[A-Za-z]{3}-\d{4}\b", cells[0]):
+                continue
+            # Skip summary rows like "Month Till Date"
+            if "month" in cells[0].lower():
+                continue
+            nums = [to_float(c) for c in cells[1:7]]
+            if any(v is None for v in nums):
+                continue
+            best_row = (cells[0], nums)
+            break
+
+        if not best_row:
+            return None
+
+        date_str, nums = best_row
+        fii_buy, fii_sell, fii_net, dii_buy, dii_sell, dii_net = nums
+        try:
+            parsed = datetime.strptime(date_str, "%d-%b-%Y")
+            out_date = parsed.strftime("%Y-%m-%d")
+        except Exception:
+            out_date = date.today().strftime("%Y-%m-%d")
+
+        return {
+            "date": out_date,
+            "fii_buy": fii_buy,
+            "fii_sell": fii_sell,
+            "fii_net": fii_net,
+            "dii_buy": dii_buy,
+            "dii_sell": dii_sell,
+            "dii_net": dii_net,
+            "source": "moneycontrol",
+        }
     except Exception:
         return None
+
+
+def fetch_from_moneycontrol_with_error() -> tuple[Optional[dict], Optional[FiiDiiFetchError]]:
+    try:
+        data = fetch_from_moneycontrol()
+        if not data:
+            return None, {"error_type": "blocked", "error": "Moneycontrol fallback blocked/unavailable", "details": "No parseable table (possible consent/bot protection)", "source": "moneycontrol"}
+        return data, None
+    except Exception as e:
+        return None, {**_classify_exception(e), "source": "moneycontrol"}
 
 
 def get_today_data(force_refresh: bool = False) -> Optional[dict]:
@@ -193,7 +370,66 @@ def get_today_data(force_refresh: bool = False) -> Optional[dict]:
         save_data(data)
         return get_data_for_date(data["date"])
 
+    # Fail-soft: if live fetch fails (NSE blocks), return latest cached row (stale).
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM fii_dii_history ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            d = dict(row)
+            d["stale"] = True
+            return d
+
     return None
+
+
+def get_today_data_with_meta(force_refresh: bool = False) -> tuple[Optional[dict], Optional[FiiDiiFetchError]]:
+    """Like get_today_data(), but also returns structured error info when live fetch fails."""
+    _ensure_table()
+    today_str = date.today().strftime("%Y-%m-%d")
+
+    if not force_refresh:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT * FROM fii_dii_history WHERE date = ?", (today_str,)
+            ).fetchone()
+            if row:
+                d = dict(row)
+                fetched = datetime.fromisoformat(d["fetched_at"])
+                if (datetime.now() - fetched).total_seconds() < 3600:
+                    return d, None
+
+    # Fetch fresh (NSE JSON -> nsepython -> Moneycontrol)
+    data, err = fetch_from_nse_api_with_error()
+    if not data:
+        data, err2 = fetch_from_nse_with_error()
+        err = err2 or err
+    if not data:
+        data, err2 = fetch_from_moneycontrol_with_error()
+        err = err2 or err
+
+    if data:
+        save_data(data)
+        return get_data_for_date(data["date"]), None
+
+    # Fail-soft: if live fetch fails, return latest cached row (stale) if any.
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM fii_dii_history ORDER BY date DESC LIMIT 1").fetchone()
+        if row:
+            d = dict(row)
+            d["stale"] = True
+            # surface why live refresh failed (useful for UI)
+            if err:
+                d["last_error_type"] = err.get("error_type")
+                d["last_error"] = err.get("error")
+            return d, None
+
+    # Cold start: no cache exists
+    if not err:
+        err = {"error_type": "no_cache", "error": "No FII/DII cache exists yet", "details": "No live data and no cached rows"}
+    else:
+        err = {**err, "details": err.get("details") or "No live data and no cached rows"}
+    return None, err
 
 
 def save_data(data: dict):

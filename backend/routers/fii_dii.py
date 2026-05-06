@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from backend.fii_dii import (
     get_today_data,
+    get_today_data_with_meta,
     get_recent_history,
     get_market_bias,
     manual_entry,
@@ -26,9 +27,15 @@ class ManualEntryRequest(BaseModel):
 @router.get("/today")
 def today(force_refresh: bool = Query(False, description="Bypass cache and re-fetch")):
     """Get today's FII/DII data (cached for 1 hour, refresh fetches new)."""
-    data = get_today_data(force_refresh=force_refresh)
+    data, err = get_today_data_with_meta(force_refresh=force_refresh)
     if not data:
-        return {"ok": False, "error": "Could not fetch FII/DII data — try again later or enter manually"}
+        return {
+            "ok": False,
+            "error": (err or {}).get("error") or "Could not fetch FII/DII data — try again later or enter manually",
+            "error_type": (err or {}).get("error_type") or "upstream_error",
+            "details": (err or {}).get("details"),
+            "source": (err or {}).get("source"),
+        }
     return {"ok": True, **data}
 
 

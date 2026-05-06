@@ -1,24 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## Frontend (Next.js 16 Trading Terminal)
+
+This directory contains the web UI for the Indian Market Trading Agent.
+
+### What the UI is for (single-user workflow)
+- Use **Today** and **Top Picks** to get trade ideas.
+- Each pick surfaces a deterministic **manual execution overlay** (size ₹, shares, SL, target, risk).
+- Use **Simulation** and **Shadow Trades** to measure whether your filtering helps or hurts.
+- Use **Signal Performance** to tune the recommender weights (optionally guarded by quality gates).
 
 ## Getting Started
 
-First, run the development server:
+First, install deps and run the dev server:
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Backend dependency
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+By default the frontend calls the backend at `http://localhost:8000`.
+Override with:
+
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
+```
+
+### Key pages
+- `src/app/page.tsx`: Dashboard (Today)
+- `src/app/recommendations/page.tsx`: Top Picks / Recommendations
+- `src/components/dashboard/TodayPicks.tsx`: Top picks widget shown on dashboard
 
 ## Learn More
 
@@ -29,8 +42,6 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## Deploy on Vercel
+## Deploy
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+This repo is primarily designed to run locally (single-user). If you deploy it, ensure the backend is reachable and locked down appropriately (API keys are stored locally in SQLite on the backend host).

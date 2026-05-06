@@ -107,6 +107,11 @@ def ensure_db():
                 pnl_3d_pct REAL,
                 pnl_5d_pct REAL,
                 pnl_10d_pct REAL,
+                estimated_cost_pct REAL,              -- configured round-trip cost drag (percentage points)
+                pnl_1d_net_pct REAL,
+                pnl_3d_net_pct REAL,
+                pnl_5d_net_pct REAL,
+                pnl_10d_net_pct REAL,
                 status TEXT DEFAULT 'active',       -- active | expired | manually_closed
                 notes TEXT,
                 updated_at TEXT DEFAULT (datetime('now'))
@@ -161,6 +166,11 @@ def ensure_db():
                 pnl_3d_pct REAL,
                 pnl_5d_pct REAL,
                 pnl_10d_pct REAL,
+                estimated_cost_pct REAL,              -- configured round-trip cost drag (percentage points)
+                pnl_1d_net_pct REAL,
+                pnl_3d_net_pct REAL,
+                pnl_5d_net_pct REAL,
+                pnl_10d_net_pct REAL,
                 user_tracked INTEGER DEFAULT 0,         -- 1 if user also opened a paper_trade for this ticker on this day
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
@@ -184,6 +194,15 @@ def ensure_db():
                 return_10d REAL,
                 outcome_1d TEXT,                    -- win | loss | breakeven
                 outcome_5d TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Offline evaluation runs (walk-forward / policy evaluation summaries)
+            CREATE TABLE IF NOT EXISTS eval_runs (
+                run_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,                    -- e.g. "walkforward"
+                params TEXT,                           -- JSON
+                metrics TEXT,                          -- JSON
                 created_at TEXT DEFAULT (datetime('now'))
             );
         """)
@@ -438,10 +457,33 @@ def _migrate_paper_trades_columns():
             ("confidence", "TEXT"),
             ("triggered_signals", "TEXT"),
             ("regime_at_entry", "TEXT"),  # Market regime when trade was opened
+            ("estimated_cost_pct", "REAL"),
+            ("pnl_1d_net_pct", "REAL"),
+            ("pnl_3d_net_pct", "REAL"),
+            ("pnl_5d_net_pct", "REAL"),
+            ("pnl_10d_net_pct", "REAL"),
         ]:
             if col not in existing:
                 try:
                     conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {ddl}")
+                except Exception:
+                    pass
+
+
+def _migrate_shadow_trades_columns():
+    """Add new columns to shadow_trades if they don't exist (for existing DBs)."""
+    with get_db() as conn:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(shadow_trades)").fetchall()}
+        for col, ddl in [
+            ("estimated_cost_pct", "REAL"),
+            ("pnl_1d_net_pct", "REAL"),
+            ("pnl_3d_net_pct", "REAL"),
+            ("pnl_5d_net_pct", "REAL"),
+            ("pnl_10d_net_pct", "REAL"),
+        ]:
+            if col not in existing:
+                try:
+                    conn.execute(f"ALTER TABLE shadow_trades ADD COLUMN {col} {ddl}")
                 except Exception:
                     pass
 
@@ -480,6 +522,12 @@ def update_paper_trade_prices(trade_id: int, prices: dict):
         entry = row["entry_price"]
         direction = row["direction"]
         multiplier = 1 if direction == "LONG" else -1
+        try:
+            from backend.cost_model import get_estimated_round_trip_cost_bps, cost_pct_from_bps, net_pnl_pct
+            cost_pct = cost_pct_from_bps(get_estimated_round_trip_cost_bps())
+        except Exception:
+            cost_pct = 0.0
+            net_pnl_pct = lambda x, **_: x  # type: ignore
 
         def calc_pnl(exit_price):
             if not exit_price or not entry:
@@ -496,6 +544,11 @@ def update_paper_trade_prices(trade_id: int, prices: dict):
                 pnl_3d_pct = COALESCE(?, pnl_3d_pct),
                 pnl_5d_pct = COALESCE(?, pnl_5d_pct),
                 pnl_10d_pct = COALESCE(?, pnl_10d_pct),
+                estimated_cost_pct = COALESCE(?, estimated_cost_pct),
+                pnl_1d_net_pct = COALESCE(?, pnl_1d_net_pct),
+                pnl_3d_net_pct = COALESCE(?, pnl_3d_net_pct),
+                pnl_5d_net_pct = COALESCE(?, pnl_5d_net_pct),
+                pnl_10d_net_pct = COALESCE(?, pnl_10d_net_pct),
                 updated_at = datetime('now')
                WHERE id = ?""",
             (
@@ -507,6 +560,11 @@ def update_paper_trade_prices(trade_id: int, prices: dict):
                 calc_pnl(prices.get("price_3d")),
                 calc_pnl(prices.get("price_5d")),
                 calc_pnl(prices.get("price_10d")),
+                cost_pct,
+                net_pnl_pct(calc_pnl(prices.get("price_1d"))),
+                net_pnl_pct(calc_pnl(prices.get("price_3d"))),
+                net_pnl_pct(calc_pnl(prices.get("price_5d"))),
+                net_pnl_pct(calc_pnl(prices.get("price_10d"))),
                 trade_id,
             ),
         )
@@ -576,3 +634,29 @@ def list_recommender_backtest_runs() -> list[dict]:
                ORDER BY MAX(created_at) DESC"""
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# --- Eval Runs ---
+
+def save_eval_run(run_id: str, kind: str, params: dict, metrics: dict) -> None:
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO eval_runs (run_id, kind, params, metrics) VALUES (?, ?, ?, ?)",
+            (run_id, kind, json.dumps(params), json.dumps(metrics)),
+        )
+
+
+def get_eval_run(run_id: str) -> dict | None:
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM eval_runs WHERE run_id = ?", (run_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        for k in ("params", "metrics"):
+            if d.get(k):
+                try:
+                    d[k] = json.loads(d[k])
+                except Exception:
+                    pass
+        return d
+

@@ -6,10 +6,10 @@ DEFAULT_CONFIG = {
     "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
     "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR", os.path.join(_TRADINGAGENTS_HOME, "logs")),
     "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR", os.path.join(_TRADINGAGENTS_HOME, "cache")),
-    # LLM settings
-    "llm_provider": "anthropic",
-    "deep_think_llm": "claude-sonnet-4-20250514",
-    "quick_think_llm": "claude-haiku-4-5-20251001",
+    # LLM settings - optimized for Indian markets with free models
+    "llm_provider": "openrouter",
+    "deep_think_llm": "meta-llama/llama-3.3-70b-instruct",
+    "quick_think_llm": "meta-llama/llama-3.1-8b-instruct",
     # Provider-specific thinking configuration
     "google_thinking_level": None,
     "openai_reasoning_effort": None,
@@ -63,4 +63,19 @@ DEFAULT_CONFIG = {
     "require_stop_loss": True,
     "allowed_exchanges": ["NSE"],
     "allowed_products": ["MIS", "CNC"],
+    # Cost-aware mode for free/low-budget providers
+    "free_tier_mode": True,
+    "llm_call_budget_per_analysis": 8,
+    "llm_fallback_chain": [
+        "meta-llama/llama-3.1-8b-instruct",
+        "qwen3.5-flash",
+        "deepseek-chat",
+    ],
+    # Adaptive learning governance
+    "bandit_enabled": True,
+    "bandit_min_samples": 8,
+    "bandit_max_step": 0.20,
+    # Trading realism (used for net-of-cost evaluation)
+    # Conservative all-in round-trip drag estimate (brokerage+taxes+slippage).
+    "estimated_round_trip_cost_bps": 35.0,
 }
